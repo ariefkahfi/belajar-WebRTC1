@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Index Page</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.1.1/socket.io.slim.js"></script>
+</head>
+<body>
+    <h1>Signalling 2</h1>
+    <div>
+        <video autoplay id="localVid"></video>
+    </div>
+    <div>
+        <video autoplay id="remoteVid"></video>
+    </div>
+    <div>
+        <button id="inviteBtn" onclick="onInvite()">Invite</button>
+    </div>
+    <div>
+        <button id="hangUpBtn" onclick="onHangUp()" disabled>Hang Up</button>
+    </div>
+</body>
+    <script>
+        var socket = io();
+
+        var pConn  = null;
+
+
+
+        function handleIceCandidate(ev){
+            console.log('pConn::onicecandidate called')
+            if(ev.candidate){
+                socket.emit('new-ice-candidate',ev.candidate)
+            }else{
+                console.log('no any candidates to send...')
+            }
+        }
+        function handleAddStream(ev){
+            document.getElementById('remoteVid').srcObject = ev.stream
+            document.getElementById('hangUpBtn').disabled = false
+            document.getElementById('inviteBtn').disabled = true
+        }
+        function handleSignalingStateChange(ev){
+            console.log('handleSignalingStateChange:: called')
+            if(pConn){
+                if(pConn.signalingState === "closed"){
+                    closeVideoCall()
+                }
+            }
+        }
+
+        function sendEvent(eventName , msg){
+            socket.emit(eventName , msg);
+        }
+
+
+
+        function onHangUp(){
+            closeVideoCall()
+            socket.emit('close-call')
+        }
+
+
+        function closeVideoCall(){
+            // closing video call...
+            let elLocalVid = document.getElementById('localVid')
+            let elRemoteVid = document.getElementById('remoteVid')
+
+            if(pConn){
+                if (elRemoteVid.srcObject) {
+                    elRemoteVid.srcObject.getTracks().forEach(track => track.stop());
+                    elRemoteVid.srcObject = null;
+                }
+
+                if (elLocalVid.srcObject) {
+                    elLocalVid.srcObject.getTracks().forEach(track => track.stop());
+                    elLocalVid.srcObject = null;
+                }
+
+                    pConn.close();
+                    pConn = null;
+            }
+            document.getElementById('inviteBtn').disabled = false
+            document.getElementById('hangUpBtn').disabled = true
+        }
+
+
+        socket.on('close-call',data=>{
+            closeVideoCall()
+        })
+
+        socket.on('new-ice-candidate',data=>{
+            pConn.addIceCandidate(new RTCIceCandidate(data))
+        })
+
+        socket.on('video-answer',data=>{
+            console.log('video-answer event called::')
+            pConn.setRemoteDescription(new RTCSessionDescription(data.sdp))
+                .catch(err=>{
+                    console.error('video-answer_error::',err)
+                })
+        })
+
+        socket.on('video-offer',data=>{
+            console.log('video-offer event called::')
+            pConn = new RTCPeerConnection({
+                iceServers:[
+                    {
+                        urls:'stun:stun.l.google.com:19302'
+                    }
+                ]
+            }); 
+            pConn.onicecandidate = handleIceCandidate
+            pConn.onaddstream = handleAddStream
+            pConn.oniceconnectionstatechange = handleIceConnectionStateChange
+            pConn.onsignalingstatechange = handleSignalingStateChange
+
+            pConn.setRemoteDescription(new RTCSessionDescription(data.sdp))
+                .then(()=>{
+                    return navigator.mediaDevices.getUserMedia({
+                        video:true,
+                        audio:true
+                    })
+                })
+                .then(mStream=>{
+                    document.getElementById('localVid').srcObject = mStream
+                    pConn.addStream(mStream)
+                })
+                .then(()=>{
+                    return pConn.createAnswer()
+                })
+                .then(sdp=>{
+                    return pConn.setLocalDescription(sdp)
+                })
+                .then(()=>{
+                    // send to peer 1
+                    // through signalling server
+                    sendEvent('video-answer',{
+                        sdp: pConn.localDescription
+                    })
+                })
+                .catch(err=>{
+                    console.error('video-offer_error::',err)
+                })
+        })
+
+        
+        function handleIceConnectionStateChange(ev){ 
+            if(pConn){
+                if(pConn.iceConnectionState === "disconnected" 
+                || pConn.iceConnectionState === "closed"){
+                    closeVideoCall();
+                }
+            }
+        }
+
+        function onInvite(){
+            pConn = new RTCPeerConnection({
+                iceServers:[
+                    {
+                        urls:'stun:stun.l.google.com:19302'
+                    }
+                ]
+            });
+            pConn.onicecandidate = handleIceCandidate
+            pConn.onaddstream = handleAddStream
+            pConn.oniceconnectionstatechange = handleIceConnectionStateChange
+            pConn.onsignalingstatechange = handleSignalingStateChange
+            
+            navigator.mediaDevices
+                .getUserMedia({
+                    video: true,
+                    audio: true
+                })  
+                .then(localStream=>{ 
+                    document.getElementById('localVid').srcObject = localStream;
+                    pConn.addStream(localStream);
+                    console.log('after pConn.addStream()...')
+                })
+                .then(()=>{
+                    return pConn.createOffer()
+                })
+                .then(sdp=>{
+                    return pConn.setLocalDescription(sdp)
+                })
+                .then(()=>{
+                    sendEvent('video-offer',{
+                        sdp: pConn.localDescription
+                    })
+                })
+                .catch(err=>{ 
+                    console.error('on_invite_error::',err)
+                });
+        }
+
+
+
+    </script>
+</html>
